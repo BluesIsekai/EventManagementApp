@@ -1,6 +1,8 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import Payments from './pages/Payments'
 import Inventory from './pages/Inventory'
+import Dashboard from './pages/Dashboard'
+import AdminProtected from './components/ui/AdminProtected'
 
 export default function App() {
   return (
@@ -18,11 +20,13 @@ export default function App() {
         </header>
         <main className="mx-auto max-w-5xl p-4">
           <Routes>
-            <Route index element={<div className="space-y-4">
-              <h2 className="text-2xl font-semibold">Dashboard</h2>
-            </div>} />
+            <Route index element={<Dashboard />} />
             <Route path="/payments" element={<Payments />} />
-            <Route path="/inventory" element={<Inventory />} />
+            <Route path="/inventory" element={
+              <AdminProtected>
+                <Inventory />
+              </AdminProtected>
+            } />
           </Routes>
         </main>
       </div>
