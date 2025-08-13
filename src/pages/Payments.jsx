@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ArrowDownTrayIcon, CheckCircleIcon, TrashIcon, QrCodeIcon, KeyIcon, CreditCardIcon, BanknotesIcon } from '@heroicons/react/24/outline'
+import { ArrowDownTrayIcon, CheckCircleIcon, TrashIcon, QrCodeIcon, CreditCardIcon, BanknotesIcon } from '@heroicons/react/24/outline'
 import Button from '../components/ui/Button'
 import Input from '../components/ui/Input'
 import Select from '../components/ui/Select'
@@ -7,6 +7,7 @@ import Badge from '../components/ui/Badge'
 import Modal from '../components/ui/Modal'
 import { collection, addDoc, serverTimestamp, query, orderBy, onSnapshot, updateDoc, deleteDoc, doc, getDoc, setDoc } from 'firebase/firestore'
 import { db } from '../lib/firebase'
+import { useAdmin } from '../contexts/AdminContext'
 
 // Build UPI params and links
 function upiQuery({ upiId, name, amount, note }) {
@@ -21,9 +22,31 @@ function upiQuery({ upiId, name, amount, note }) {
 }
 
 function upiPayUrl(args){ return `upi://pay?${upiQuery(args)}` }
-function gpayIntentUrl(args){
-  const fallback = encodeURIComponent(upiPayUrl(args))
-  return `intent://upi/pay?${upiQuery(args)}#Intent;scheme=upi;package=com.google.android.apps.nbu.paisa.user;S.browser_fallback_url=${fallback};end`
+
+// Multiple UPI app intent URLs for better compatibility
+function getUpiIntentUrls(args) {
+  const upiUrl = upiPayUrl(args)
+  const query = upiQuery(args)
+  
+  return {
+    // Generic UPI intent (works with most UPI apps)
+    generic: `intent://pay?${query}#Intent;scheme=upi;action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;launchFlags=0x10000000;end`,
+    
+    // Google Pay specific
+    gpay: `intent://upi/pay?${query}#Intent;scheme=upi;package=com.google.android.apps.nbu.paisa.user;end`,
+    
+    // PhonePe specific
+    phonepe: `intent://upi/pay?${query}#Intent;scheme=upi;package=com.phonepe.app;end`,
+    
+    // Paytm specific
+    paytm: `intent://upi/pay?${query}#Intent;scheme=upi;package=net.one97.paytm;end`,
+    
+    // BHIM specific
+    bhim: `intent://upi/pay?${query}#Intent;scheme=upi;package=in.org.npci.upiapp;end`,
+    
+    // Standard UPI URL as fallback
+    fallback: upiUrl
+  }
 }
 
 export default function Payments() {
@@ -40,8 +63,10 @@ export default function Payments() {
   const [paidAt, setPaidAt] = useState(todayStr()) // ISO date string (YYYY-MM-DD)
   const [statusFilter, setStatusFilter] = useState('all')
   const [modeFilter, setModeFilter] = useState('all')
-  const [isAdmin, setIsAdmin] = useState(false)
   const [showQR, setShowQR] = useState(false)
+  
+  // Use global admin state
+  const { isAdminAuthenticated } = useAdmin()
 
   useEffect(() => {
     const q = query(collection(db, 'payments'), orderBy('createdAt', 'desc'))
@@ -108,7 +133,7 @@ export default function Payments() {
 
   // Save UPI ID to Firestore when changed by admin
   const saveUpiIdToFirestore = async (newUpiId) => {
-    if (!isAdmin) {
+    if (!isAdminAuthenticated) {
       alert('Only admins can save UPI ID')
       return
     }
@@ -142,22 +167,6 @@ export default function Payments() {
       }
     }
   }
-  // Do not persist admin mode; every load starts as non-admin
-
-  const ADMIN_CODE = import.meta.env.VITE_ADMIN_CODE || ''
-  function adminLogin() {
-    const code = window.prompt('Enter admin code')
-    if (!code) return
-    if (ADMIN_CODE && code === ADMIN_CODE) {
-      setIsAdmin(true)
-    } else if (!ADMIN_CODE) {
-      // If no code configured, allow enabling for local/testing
-      setIsAdmin(true)
-    } else {
-      alert('Invalid code')
-    }
-  }
-  function adminLogout() { setIsAdmin(false) }
 
   function isValidUpiId(v){
     const s = String(v || '').trim()
@@ -220,7 +229,7 @@ export default function Payments() {
   }
 
   const upiUrl = useMemo(() => upiPayUrl({ upiId, amount, note }), [upiId, amount, note])
-  const intentUrl = useMemo(() => gpayIntentUrl({ upiId, amount, note }), [upiId, amount, note])
+  const upiIntents = useMemo(() => getUpiIntentUrls({ upiId, amount, note }), [upiId, amount, note])
 
   const filtered = useMemo(() => {
     return items.filter((i) => {
@@ -233,13 +242,13 @@ export default function Payments() {
   const total = filtered.reduce((s, i) => s + (i.amount || 0), 0)
 
   async function toggleReceived(item) {
-    if (!isAdmin) return
+    if (!isAdminAuthenticated) return
     const ref = doc(db, 'payments', item.id)
     await updateDoc(ref, { status: item.status === 'received' ? 'requested' : 'received' })
   }
 
   async function removePayment(item) {
-    if (!isAdmin) return
+    if (!isAdminAuthenticated) return
     const ref = doc(db, 'payments', item.id)
     await deleteDoc(ref)
   }
@@ -282,8 +291,23 @@ export default function Payments() {
     const isAndroid = /Android/i.test(navigator.userAgent);
     
     if (isAndroid) {
-      // Use the robust intent URL. It prefers GPay and falls back to the system chooser.
-      window.location.href = intentUrl;
+      // For Android, try multiple approaches
+      try {
+        // First try: Generic UPI intent that should work with any UPI app
+        window.location.href = upiIntents.generic;
+        
+        // If that doesn't work after a short delay, try the standard UPI URL
+        setTimeout(() => {
+          if (document.visibilityState === 'visible') {
+            console.log('Fallback: Trying standard UPI URL');
+            window.location.href = upiUrl;
+          }
+        }, 1000);
+        
+      } catch (error) {
+        console.log('Intent failed, trying standard UPI URL immediately');
+        window.location.href = upiUrl;
+      }
     } else if (isMobile) {
       // For iOS and other mobile OS, use the generic UPI link to open the system chooser.
       window.location.href = upiUrl;
@@ -312,23 +336,7 @@ export default function Payments() {
           </div>
         </div>
 
-        {/* Admin Controls */}
-        <div className="flex items-center gap-3 text-sm">
-          {isAdmin ? (
-            <>
-              <span className="inline-flex items-center gap-2 rounded-full bg-green-100 px-4 py-2 font-medium text-green-700 shadow-sm">
-                ✨ Admin mode
-              </span>
-              <Button variant="outline" onClick={adminLogout} className="hover:scale-105 transition-transform">
-                Logout
-              </Button>
-            </>
-          ) : (
-            <Button variant="outline" onClick={adminLogin} className="hover:scale-105 transition-transform">
-              <KeyIcon className="h-4 w-4" /> Admin login
-            </Button>
-          )}
-        </div>
+        {/* Admin Controls - Removed since we use global admin state */}
 
         {/* UPI Configuration */}
         <div className="rounded-2xl bg-white/80 backdrop-blur-sm border border-orange-100 shadow-lg p-6">
@@ -336,7 +344,7 @@ export default function Payments() {
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="block">
               <span className="text-sm font-medium text-gray-700">Receiver UPI ID</span>
-              {isAdmin ? (
+              {isAdminAuthenticated ? (
                 <div className="space-y-2">
                   <Input 
                     value={upiId} 
@@ -438,7 +446,7 @@ export default function Payments() {
             >
               <QrCodeIcon className="h-4 w-4" /> Show QR Code
             </Button>
-            {isAdmin && (
+            {isAdminAuthenticated && (
               <Button 
                 variant="outline" 
                 onClick={() => savePayment('received')}
@@ -451,7 +459,7 @@ export default function Payments() {
         </div>
 
         {/* Admin Payment Mode Selection */}
-        {isAdmin && (
+        {isAdminAuthenticated && (
           <div className="rounded-2xl bg-white/80 backdrop-blur-sm border border-gray-200 shadow-lg p-6">
             <h3 className="text-lg font-semibold text-gray-900 mb-4">⚙️ Admin Settings</h3>
             <div className="grid gap-4 sm:grid-cols-3">
@@ -481,7 +489,7 @@ export default function Payments() {
         )}
 
         <p className="text-center text-sm text-gray-500 bg-white/60 rounded-lg p-3">
-          💡 Tip: On Android, this opens the Google Pay app directly. On other devices, it opens any installed UPI app via the generic UPI link.
+          💡 Tip: On Android, this opens any installed UPI app (Google Pay, PhonePe, Paytm, BHIM, etc.). On other devices, it opens the default UPI app.
         </p>
 
         {/* Payments List */}
@@ -561,7 +569,7 @@ export default function Payments() {
                     {item.status === 'received' ? '✅ Received' : '⏳ Requested'}
                   </span>
                 </div>
-                {isAdmin && (
+                {isAdminAuthenticated && (
                   <div className="flex items-center gap-2">
                     <Button 
                       variant="outline" 

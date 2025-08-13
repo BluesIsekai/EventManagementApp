@@ -1,11 +1,12 @@
 import { useState } from 'react'
+import { useAdmin } from '../../contexts/AdminContext'
 import Button from './Button'
 import Input from './Input'
 
 export default function AdminProtected({ children, onSuccess }) {
   const [code, setCode] = useState('')
-  const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [error, setError] = useState('')
+  const { isAdminAuthenticated, login } = useAdmin()
 
   const ADMIN_CODE = import.meta.env.VITE_ADMIN_CODE || 'ganesh123'
 
@@ -17,7 +18,7 @@ export default function AdminProtected({ children, onSuccess }) {
     }
     
     if (code === ADMIN_CODE) {
-      setIsAuthenticated(true)
+      login()
       setError('')
       if (onSuccess) onSuccess()
     } else {
@@ -26,7 +27,7 @@ export default function AdminProtected({ children, onSuccess }) {
     }
   }
 
-  if (isAuthenticated) {
+  if (isAdminAuthenticated) {
     return children
   }
 
