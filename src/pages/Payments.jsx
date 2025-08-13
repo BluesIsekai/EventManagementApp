@@ -5,7 +5,7 @@ import Input from '../components/ui/Input'
 import Select from '../components/ui/Select'
 import Badge from '../components/ui/Badge'
 import Modal from '../components/ui/Modal'
-import { collection, addDoc, serverTimestamp, query, orderBy, onSnapshot, updateDoc, deleteDoc, doc } from 'firebase/firestore'
+import { collection, addDoc, serverTimestamp, query, orderBy, onSnapshot, updateDoc, deleteDoc, doc, getDoc, setDoc } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 
 // Build UPI params and links
@@ -30,10 +30,11 @@ export default function Payments() {
   const [donor, setDonor] = useState('')
   const [email, setEmail] = useState('')
   const [amount, setAmount] = useState('')
-  const [upiId, setUpiId] = useState('joshitanishq9@okhdfcbank') // TODO: set your real UPI ID
+  const [upiId, setUpiId] = useState('') // Will be loaded from Firestore
   const [note, setNote] = useState('Ganesh Chaturthi 2025')
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
+  const [settingsLoading, setSettingsLoading] = useState(true)
   const [mode, setMode] = useState('upi') // 'upi' | 'cash'
   function todayStr(){ return new Date().toISOString().slice(0,10) }
   const [paidAt, setPaidAt] = useState(todayStr()) // ISO date string (YYYY-MM-DD)
@@ -52,15 +53,95 @@ export default function Payments() {
     return () => unsub()
   }, [])
 
-  // Persist UPI ID locally so you don't have to retype
+  // Load app settings from Firestore
   useEffect(() => {
-    const saved = localStorage.getItem('upiId')
-    if (saved) setUpiId(saved)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const loadSettings = async () => {
+      try {
+        const settingsRef = doc(db, 'settings', 'app')
+        const settingsSnap = await getDoc(settingsRef)
+        
+        if (settingsSnap.exists()) {
+          const settings = settingsSnap.data()
+          console.log('Loaded settings:', settings)
+          if (settings.upiId) {
+            setUpiId(settings.upiId)
+          }
+        } else {
+          // Create default settings document
+          const defaultUpiId = 'joshitanishq9@okhdfcbank' // Set your default UPI ID
+          console.log('Creating default settings with UPI ID:', defaultUpiId)
+          
+          await setDoc(settingsRef, {
+            upiId: defaultUpiId,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          })
+          setUpiId(defaultUpiId)
+        }
+      } catch (error) {
+        console.error('Error loading settings:', error)
+        
+        // More specific error handling
+        if (error.code === 'permission-denied') {
+          console.warn('Firestore permission denied, using localStorage fallback')
+        } else if (error.code === 'unavailable') {
+          console.warn('Firestore unavailable, using localStorage fallback')
+        }
+        
+        // Fallback to localStorage if Firestore fails
+        const saved = localStorage.getItem('upiId')
+        if (saved) {
+          console.log('Using localStorage UPI ID:', saved)
+          setUpiId(saved)
+        } else {
+          // Set default if nothing exists
+          const defaultUpiId = 'joshitanishq9@okhdfcbank'
+          setUpiId(defaultUpiId)
+          localStorage.setItem('upiId', defaultUpiId)
+        }
+      }
+      setSettingsLoading(false)
+    }
+    
+    loadSettings()
   }, [])
-  useEffect(() => {
-    if (upiId) localStorage.setItem('upiId', upiId)
-  }, [upiId])
+
+  // Save UPI ID to Firestore when changed by admin
+  const saveUpiIdToFirestore = async (newUpiId) => {
+    if (!isAdmin) {
+      alert('Only admins can save UPI ID')
+      return
+    }
+    
+    if (!newUpiId || !newUpiId.trim()) {
+      alert('Please enter a valid UPI ID')
+      return
+    }
+    
+    try {
+      const settingsRef = doc(db, 'settings', 'app')
+      await setDoc(settingsRef, {
+        upiId: newUpiId.trim(),
+        updatedAt: serverTimestamp()
+      }, { merge: true })
+      
+      // Also save to localStorage as backup
+      localStorage.setItem('upiId', newUpiId.trim())
+      
+      alert('UPI ID saved successfully!')
+    } catch (error) {
+      console.error('Error saving UPI ID:', error)
+      
+      // More specific error messages
+      if (error.code === 'permission-denied') {
+        alert('Permission denied. Please check Firestore security rules.')
+      } else if (error.code === 'unavailable') {
+        alert('Firestore is currently unavailable. Please try again later.')
+      } else {
+        alert(`Failed to save UPI ID: ${error.message}`)
+      }
+    }
+  }
   // Do not persist admin mode; every load starts as non-admin
 
   const ADMIN_CODE = import.meta.env.VITE_ADMIN_CODE || ''
@@ -256,15 +337,24 @@ export default function Payments() {
             <label className="block">
               <span className="text-sm font-medium text-gray-700">Receiver UPI ID</span>
               {isAdmin ? (
-                <Input 
-                  value={upiId} 
-                  onChange={e=>setUpiId(e.target.value)} 
-                  placeholder="name@bank"
-                  className="mt-2 focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
-                />
+                <div className="space-y-2">
+                  <Input 
+                    value={upiId} 
+                    onChange={e=>setUpiId(e.target.value)}
+                    placeholder="name@bank"
+                    className="mt-2 focus:ring-2 focus:ring-orange-500 focus:border-orange-500"
+                  />
+                  <Button 
+                    variant="outline" 
+                    onClick={()=>saveUpiIdToFirestore(upiId)}
+                    className="text-xs px-3 py-1 hover:scale-105 transition-transform"
+                  >
+                    💾 Save UPI ID
+                  </Button>
+                </div>
               ) : (
                 <div className="mt-2 w-full rounded-lg border border-dashed border-gray-300 bg-gray-50 px-3 py-3 text-gray-700">
-                  {upiId || 'Not set'}
+                  {settingsLoading ? 'Loading...' : (upiId || 'Not set')}
                   <span className="ml-2 align-middle text-xs text-gray-500">(admin only)</span>
                 </div>
               )}
