@@ -383,7 +383,7 @@ export default function Payments() {
               <Input 
                 value={donor} 
                 onChange={e=>setDonor(e.target.value)} 
-                placeholder="e.g. Rahul Sharma"
+                placeholder="e.g. Your Name"
                 className="mt-2 focus:ring-2 focus:ring-orange-500 focus:border-orange-500 bg-white/80"
               />
             </label>
